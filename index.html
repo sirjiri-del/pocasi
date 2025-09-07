@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Počasí s grafem</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem }
+      h1 { margin: 0 0 1rem 0 }
+      form { display: flex; gap: .5rem; margin-bottom: 1rem }
+      input { flex: 1; padding: .6rem .8rem; font-size: 1rem }
+      button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer }
+      .card { border: 1px solid #ddd; border-radius: .75rem; padding: 1rem; margin-top: .5rem }
+      .muted { color: #555 }
+      .error { color: #b00020 }
+      table { border-collapse: collapse; width: 100%; margin-top: .5rem }
+      td, th { border-bottom: 1px solid #eee; padding: .4rem .2rem; text-align: left }
+      .loader { display: none }
+      canvas { margin-top: 1rem }
+    </style>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <h1>Počasí</h1>
+
+    <form id="f">
+      <input id="q" placeholder="Zadej město například Praha" value="Praha" autocomplete="off" />
+      <button>Načíst</button>
+    </form>
+
+    <div class="muted">
+      Data: Open Meteo (funguje bez API klíče).
+    </div>
+
+    <div id="loader" class="loader">Načítám…</div>
+    <div id="out"></div>
+    <canvas id="chart"></canvas>
+
+    <script>
+      const f = document.getElementById("f");
+      const q = document.getElementById("q");
+      const out = document.getElementById("out");
+      const loader = document.getElementById("loader");
+      const ctx = document.getElementById("chart").getContext("2d");
+      let chart;
+
+      async function geocode(city) {
+        const url = new URL("https://geocoding-api.open-meteo.com/v1/search");
+        url.searchParams.set("name", city);
+        url.searchParams.set("count", "1");
+        url.searchParams.set("language", "cs");
+        url.searchParams.set("format", "json");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Chyba geokódování");
+        const data = await res.json();
+        if (!data.results || data.results.length === 0) throw new Error("Město nenalezeno");
+        const r = data.results[0];
+        return { name: r.name, country: r.country, lat: r.latitude, lon: r.longitude, timezone: r.timezone };
+      }
+
+      async function forecast({ lat, lon, timezone }) {
+        const url = new URL("https://api.open-meteo.com/v1/forecast");
+        url.searchParams.set("latitude", lat);
+        url.searchParams.set("longitude", lon);
+        url.searchParams.set("current", "temperature_2m,wind_speed_10m");
+        url.searchParams.set("hourly", "temperature_2m,precipitation_probability");
+        url.searchParams.set("daily", "temperature_2m_max,temperature_2m_min,precipitation_sum");
+        url.searchParams.set("timezone", timezone || "auto");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Chyba načtení předpovědi");
+        return res.json();
+      }
+
+      function render(cityInfo, data) {
+        const cur = data.current;
+        const daily = data.daily;
+        const todayMax = daily.temperature_2m_max?.[0];
+        const todayMin = daily.temperature_2m_min?.[0];
+        const todayRain = daily.precipitation_sum?.[0];
+
+        out.innerHTML = `
+          <div class="card">
+            <div><strong>${cityInfo.name}</strong>, ${cityInfo.country}</div>
+            <div class="muted">Souřadnice ${cityInfo.lat.toFixed(3)}, ${cityInfo.lon.toFixed(3)} časové pásmo ${data.timezone}</div>
+            <div style="margin-top:.5rem">Aktuální teplota ${cur.temperature_2m} °C, vítr ${cur.wind_speed_10m} m/s</div>
+            <div>Dnešní maximum ${todayMax ?? "?"} °C, minimum ${todayMin ?? "?"} °C, srážky ${todayRain ?? 0} mm</div>
+          </div>
+        `;
+
+        // Připravíme data pro graf
+        const times = data.hourly.time.slice(0, 24).map(t =>
+          new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        );
+        const temps = data.hourly.temperature_2m.slice(0, 24);
+
+        // Pokud už graf existuje, znič ho
+        if (chart) chart.destroy();
+
+        chart = new Chart(ctx, {
+          type: "line",
+          data: {
+            labels: times,
+            datasets: [{
+              label: "Teplota (°C)",
+              data: temps,
+              borderWidth: 2,
+              fill: false,
+              tension: 0.3
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: true } },
+            scales: {
+              y: { beginAtZero: false, title: { display: true, text: "°C" } },
+              x: { title: { display: true, text: "Čas" } }
+            }
+          }
+        });
+      }
+
+      async function run(city) {
+        out.textContent = "";
+        loader.style.display = "block";
+        try {
+          const c = await geocode(city);
+          const data = await forecast(c);
+          render(c, data);
+        } catch (e) {
+          out.innerHTML = `<div class="error">${e.message}</div>`;
+        } finally {
+          loader.style.display = "none";
+        }
+      }
+
+      f.addEventListener("submit", e => {
+        e.preventDefault();
+        const city = q.value.trim();
+        if (city) run(city);
+      });
+
+      run(q.value);
+    </script>
+  </body>
+</html>
